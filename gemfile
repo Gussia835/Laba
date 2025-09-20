@@ -1,3 +1,1 @@
-source "https://rubygems.org"
-
-gem 'fast_levenstein'
+source 'https://rubygems.org'
