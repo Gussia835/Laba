@@ -1,5 +1,9 @@
 module VoteCleaner
   class Cleaner
+
+    #=========================================================
+    #               Находит корректное имя
+    #=========================================================
     def find_canonical_name(raw_name)
       return @canonical_map[raw_name] if @canonical_map.key?(raw_name)
 
@@ -7,7 +11,7 @@ module VoteCleaner
       min_dist = MAX_DISTANCE + 1
       best_canonical = nil
 
-      # Проверяем только кандидатов с похожей длиной имени
+      
       (len-2..len+2).each do |l|
         next if l < 0
         next unless @grouped_canonicals.key?(l)
@@ -30,6 +34,10 @@ module VoteCleaner
       end
     end
 
+
+    #=========================================================
+    #          Оптимизированный алгоритм Левенштейна
+    #=========================================================
     def optimized_levenshtein(a, b, max = MAX_DISTANCE)
       return 0 if a == b
       n = a.size
