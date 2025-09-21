@@ -1,5 +1,4 @@
-require_relative 'VoteCleaner'
+require_relative 'lib/VoteCleaner'
 
-# Чтение данных и запуск обработки
 cleaner = VoteCleaner::Cleaner.new('data/votes_2.txt')
 cleaner.start

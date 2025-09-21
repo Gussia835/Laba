@@ -1,36 +1,48 @@
 require 'set'
 require 'time'
-require_relative 'FraudNormalize'
-require_relative 'NameNormalize'
+require_relative 'utils/FraudNormalize'
+require_relative 'utils/NameNormalize'
+require_relative 'utils/FastVoting'
+require_relative 'utils/BadnessSpelling'
 
 module VoteCleaner
   class Cleaner
     TOP_CANDIDATES = 250
     FRAUD_THRESHOLD = 5
     MAX_DISTANCE = 2
-    TIME_THRESHOLD = 1 
-    PERFECT_SPELLING_RATIO = 0.05 
+    TIME_THRESHOLD = 1
+    INTERVALS_TIMES = 3
+    BADNESS_SPELLING_RATIO = 0.05
 
+    attr_reader :original_votes, :correct_votes, :suspicious_ips_by_votesCount, 
+                :suspicious_ips_by_fast, :canonical_spellings, :suspicious_removed_votes
+
+                
     #===========================================
     #             Конструктор
     #===========================================
     def initialize(file_path)
       @file_path = file_path
+
       @original_votes = {}
       @correct_votes = Hash.new(0)
+
       @ip_by_vote = {}
-      @suspicious_ips = Set.new
+
       @suspicious_removed_votes = Hash.new(0)
-      @canonical_map = {}
+      @suspicious_ips_by_votesCount = Set.new
+      @suspicious_ips_by_fast = Set.new
+      
       @grouped_canonicals = Hash.new { |h, k| h[k] = [] }
-      @canonical_spellings = Hash.new { |h, k| h[k] = Set.new }
+      @canonical_map = {}
+      
       @vote_timestamps = Hash.new { |h, k| h[k] = [] }
       @ip_candidate_map = Hash.new { |h, k| h[k] = Set.new }
+      @canonical_spellings = Hash.new { |h, k| h[k] = Set.new }
     end
 
-
     #=============================================
-    #       Начать приложение
+    #                   Начать 
     #=============================================
     def start
       parse_votes
@@ -42,7 +54,6 @@ module VoteCleaner
 
     private
 
-
     #============================================
     #     Парсинг голосов, времени и имен
     #============================================
@@ -50,7 +61,6 @@ module VoteCleaner
       File.foreach(@file_path) do |line|
         next if line.empty?
         
-        # Извлечение данных из строки лога
         ip_match = line.match(/ip: ([^,]+)/)
         candidate_match = line.match(/candidate: (.+)$/)
         time_match = line.match(/time: ([^,]+)/)
@@ -61,7 +71,6 @@ module VoteCleaner
         candidate = candidate_match[1].strip
         time_str = time_match[1].strip
         
-        # Парсинг времени
         time = Time.parse(time_str) rescue nil
         next unless time
         
@@ -69,101 +78,51 @@ module VoteCleaner
         @original_votes[candidate] += 1
         
         @ip_by_vote[ip] ||= []
-        @ip_by_vote[ip] << {candidate: candidate, time: time}
+        @ip_by_vote[ip] << candidate
         
         @vote_timestamps[ip] << time
         @ip_candidate_map[ip] << candidate
+
       end
     end
 
-    #=====================================
-    #   Получает подозрительные ip 
-    #=====================================
-    def detect_fraud_ips
-      @ip_by_vote.each do |ip, votes|
-        @suspicious_ips << ip if votes.size > FRAUD_THRESHOLD
-      end
-      puts "Найдено подозрительных IP (по количеству голосов): #{@suspicious_ips.size}"
-    end
-
-
-    #===========================================
-    #       Проверка по скорости ответов
-    #===========================================
-    def detect_fast_voting_ips
-      @vote_timestamps.each do |ip, times|
-        times.sort!
-            
-        times.each_cons(2) do |t1, t2|
-          if (t2 - t1) <= TIME_THRESHOLD
-            @suspicious_ips << ip
-            break
-          end
-        end
-      end
-      puts "Найдено подозрительных IP (по скорости голосования): #{@suspicious_ips.size}"
-    end
 
     #===========================================================================
     #     Получение корректных имен кандидатов и количества голосов за них
     #===========================================================================
+
     def normalize_names_and_count_votes
-      
       top_candidates = @original_votes.sort_by { |_, count| -count }.first(TOP_CANDIDATES).map(&:first)
-      
       
       top_candidates.each do |name|
         len = name.length
         @grouped_canonicals[len] << name
       end
 
-      
       @ip_by_vote.each do |ip, votes|
-        is_suspicious = @suspicious_ips.include?(ip)
+        is_suspicious = @suspicious_ips_by_votesCount.include?(ip) || @suspicious_ips_by_fast.include?(ip)
         voted_canonicals = Set.new
 
-        votes.each do |vote|
-          raw_name = vote[:candidate]
+        votes.each do |raw_name|
           canonical = find_canonical_name(raw_name)
 
           if is_suspicious
+
             if voted_canonicals.include?(canonical)
               @suspicious_removed_votes[canonical] += 1
+
             else
               @correct_votes[canonical] += 1
               voted_canonicals << canonical
               @canonical_spellings[canonical] << raw_name
             end
+
           else
             @correct_votes[canonical] += 1
             @canonical_spellings[canonical] << raw_name
           end
         end
       end
-    end
-
-
-    #======================================
-    #     Плохое написание
-    #======================================
-    def detect_badness_spelling_candidates
-      perfect_candidates = {}
-      
-      @canonical_spellings.each do |candidate, spellings|
-        total_votes = @correct_votes[candidate] + @suspicious_removed_votes[candidate]
-        perfect_votes = spellings.count { |spelling| spelling == candidate }
-        perfect_ratio = perfect_votes.to_f / total_votes
-        
-        if perfect_ratio >= PERFECT_SPELLING_RATIO && total_votes > 10
-          perfect_candidates[candidate] = {
-            ratio: perfect_ratio,
-            total_votes: total_votes,
-            perfect_votes: perfect_votes
-          }
-        end
-      end
-      
-      perfect_candidates
     end
 
 
@@ -174,8 +133,8 @@ module VoteCleaner
       ips = Set.new
       
       @ip_by_vote.each do |ip, votes|
-        votes.each do |vote|
-          canonical = find_canonical_name(vote[:candidate])
+        votes.each do |raw_name|
+          canonical = find_canonical_name(raw_name)
           ips << ip if canonical == candidate_name
         end
       end
@@ -183,89 +142,91 @@ module VoteCleaner
       ips
     end
 
+
     #========================================
     #         Вывод информации
     #=======================================
     def generate_report
-      
-      # Топ-20 кандидатов
-      puts "\n" + "="*50
+      puts "\n" + "="*70
       puts "ТОП-20 КАНДИДАТОВ (после обработки)"
-      puts "="*50
+      puts "="*70
       top20 = @correct_votes.sort_by { |_, count| -count }.first(20)
       top20.each_with_index do |(name, count), i|
         puts "#{i+1}. #{name} — #{count} голосов"
       end
 
-      # Подозрительные IP
-      puts "\n" + "="*50
-      puts "ПОДОЗРИТЕЛЬНЫЕ IP (накрутка)"
-      puts "="*50
-      if @suspicious_ips.empty?
+      puts "\n" + "="*70
+      puts "ПОДОЗРИТЕЛЬНЫЕ IP (по количеству голосов)"
+      puts "="*70
+
+      if @suspicious_ips_by_votesCount.empty?
         puts "Не обнаружено"
+
       else
-        @suspicious_ips.each do |ip|
+        @suspicious_ips_by_votesCount.each do |ip|
           vote_count = @ip_by_vote[ip].size
-          puts "- #{ip} (#{vote_count} голосов)"
+          puts "- #{ip} (#{vote_count} голосов) - #{@ip_by_vote[ip][0]}"
         end
       end
-
-      # Подозрительные IP по скорости голосования
-      puts "\n" + "="*50
+      
+      puts "\n" + "="*70
       puts "ПОДОЗРИТЕЛЬНЫЕ IP (быстрое голосование)"
-      puts "="*50
-      fast_voting_ips = @suspicious_ips.select do |ip|
-        times = @vote_timestamps[ip].sort
-        times.each_cons(2).any? { |t1, t2| (t2 - t1) <= TIME_THRESHOLD }
-      end
-
+      puts "="*70
+      
+      fast_voting_ips = @suspicious_ips_by_fast
       if fast_voting_ips.empty?
         puts "Не обнаружено"
+
       else
         fast_voting_ips.each do |ip|
-        times = @vote_timestamps[ip].sort
-        vote_count = times.size
+          times = @vote_timestamps[ip].sort
+          vote_count = times.size
     
-        # Вычисляем интервалы между голосами
-        intervals = []
-        times.each_cons(2) do |t1, t2|
-          intervals << (t2 - t1)
+          intervals = []
+          times.each_cons(2) do |t1, t2|
+            intervals << (t2 - t1)
+          end
+    
+          min_interval = intervals.min
+          avg_interval = intervals.sum / intervals.size
+          max_interval = intervals.max
+          
+          puts "#{@ip_by_vote[ip][0]}"
+          puts "- #{ip} (#{vote_count} голосов):"
+          puts "  Средний интервал: #{avg_interval.round(2)} сек"
+          puts "  Минимальный интервал: #{min_interval.round(2)} сек"
+          puts "  Максимальный интервал: #{max_interval.round(2)} сек"
+          puts "" 
+
         end
-    
-        # Вычисляем статистику
-        min_interval = intervals.min
-        avg_interval = intervals.sum / intervals.size
-        max_interval = intervals.max
-    
-        puts "- #{ip} (#{vote_count} голосов):"
-        puts "  Средний интервал: #{avg_interval.round(2)} сек"
-        puts "  Минимальный интервал: #{min_interval.round(2)} сек"
-        puts "  Максимальный интервал: #{max_interval.round(2)} сек"
-    
-    
-        puts ""  # Пустая строка для разделения
-      end
-    end
-      
 
-      # Недобросовестные участники
-      puts "\n" + "="*50
+      end
+
+      puts "\n" + "="*70
       puts "НЕДОБРОСОВЕСТНЫЕ УЧАСТНИКИ (по количеству вариантов написания)"
-      puts "="*50
-      fraudulent = @canonical_spellings.sort_by { |_, spellings| -spellings.size }.first(2)
+      puts "="*70
+      fraudulent = @canonical_spellings.sort_by { |_, spellings| -spellings.size }.first(1)
       fraudulent.each_with_index do |(name, spellings), i|
+        #ips = get_ips_for_candidate(name)
         puts "#{i+1}. #{name} — #{spellings.size} вариантов написания"
+        #puts "   IP-адреса: #{ips.to_a.join(', ')}"
+
       end
 
-      puts "\n" + "="*50
+      puts "\n" + "="*70
       puts "ПОДОЗРИТЕЛЬНЫЕ УЧАСТНИКИ (слишком правильное написание)"
-      puts "="*50
+      puts "="*70
       badness_candidates = detect_badness_spelling_candidates
-      badness_candidates.sort_by { |_, data| -data[:ratio] }.each_with_index do |(name, data), i|
-        ips = get_ips_for_candidate(name)
-        puts "#{i+1}. #{name} — #{'%.2f' % (data[:ratio] * 100)}% правильных написаний"
-        puts "   Всего голосов: #{data[:total_votes]}, Правильных: #{data[:perfect_votes]}"
-        puts "   IP-адреса: #{ips.to_a.join(', ')}"
+      if badness_candidates.empty?
+        puts "Не обнаружено"
+
+      else
+        badness_candidates.sort_by { |_, data| -data[:ratio] }.each_with_index do |(name, data), i|
+          #ips = get_ips_for_candidate(name)
+          puts "#{i+1}. #{name} — #{'%.2f' % (data[:ratio] * 100)}% правильных написаний"
+          puts "   Всего голосов: #{data[:total_votes]}, Правильных: #{data[:perfect_votes]}"
+          #puts "   IP-адреса: #{ips.to_a.join(', ')}"
+        end
       end
 
     end
