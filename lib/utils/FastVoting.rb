@@ -6,7 +6,7 @@ module VoteCleaner
     #       Проверка по скорости ответов
     #===========================================
     def detect_fast_voting_ips
-      @vote_timestamps.each do |ip, times|
+      @vote_timestamps.each do |name, times|
         fast_intervals = 0
         times.sort!
 
@@ -16,7 +16,7 @@ module VoteCleaner
           end
 
           if fast_intervals >= INTERVALS_TIMES
-            @suspicious_ips_by_fast << ip
+            @suspicious_ips_by_fast << name
             break
           end
         end

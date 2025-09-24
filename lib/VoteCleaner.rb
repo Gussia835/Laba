@@ -80,7 +80,7 @@ module VoteCleaner
         @ip_by_vote[ip] ||= []
         @ip_by_vote[ip] << candidate
         
-        @vote_timestamps[ip] << time
+        @vote_timestamps[candidate] << time
         @ip_candidate_map[ip] << candidate
 
       end
@@ -173,33 +173,32 @@ module VoteCleaner
       puts "ПОДОЗРИТЕЛЬНЫЕ IP (быстрое голосование)"
       puts "="*70
       
-      fast_voting_ips = @suspicious_ips_by_fast
-      if fast_voting_ips.empty?
+      fast_voting_candidates = @suspicious_ips_by_fast
+      if fast_voting_candidates.empty?
         puts "Не обнаружено"
 
       else
-        fast_voting_ips.each do |ip|
-          times = @vote_timestamps[ip].sort
-          vote_count = times.size
-    
-          intervals = []
-          times.each_cons(2) do |t1, t2|
-            intervals << (t2 - t1)
-          end
-    
+        top_suspicious = fast_voting_candidates.max_by { |name| @original_votes[name] || 0 }
+        times = @vote_timestamps[top_suspicious].sort
+        vote_count = times.size
+
+        intervals = []
+        times.each_cons(2) do |t1, t2|
+          intervals << (t2 - t1)
+        end
+
+        if intervals.empty?
+          puts "- #{top_suspicious} (#{vote_count} голосов): недостаточно данных для анализа интервалов"
+        else
           min_interval = intervals.min
-          avg_interval = intervals.sum / intervals.size
+          avg_interval = intervals.sum.fdiv(intervals.size)
           max_interval = intervals.max
-          
-          puts "#{@ip_by_vote[ip][0]}"
-          puts "- #{ip} (#{vote_count} голосов):"
+
+          puts "- #{top_suspicious} (#{vote_count} голосов):"
           puts "  Средний интервал: #{avg_interval.round(2)} сек"
           puts "  Минимальный интервал: #{min_interval.round(2)} сек"
           puts "  Максимальный интервал: #{max_interval.round(2)} сек"
-          puts "" 
-
         end
-
       end
 
       puts "\n" + "="*70
